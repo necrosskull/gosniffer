@@ -145,7 +145,7 @@ func openPcapHandle(device string, timeout time.Duration) *pcap.Handle {
 
 func applyFilter(handle *pcap.Handle) {
 	if *filter != "" {
-		log.Println("applying filter ", *filter)
+		log.Println("применяется фильтр: ", *filter)
 		err := handle.SetBPFFilter(*filter)
 		if err != nil {
 			log.Fatal(err)
