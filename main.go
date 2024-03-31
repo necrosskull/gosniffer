@@ -80,6 +80,8 @@ func getTimeout() time.Duration {
 }
 
 func getNetIP() net.IP {
+	var netIP net.IP
+
 	netName, err := net.InterfaceByName(*iface)
 	if err != nil {
 		log.Fatalf("InterfaceByName: %v: %v", err, *iface)
@@ -88,10 +90,23 @@ func getNetIP() net.IP {
 	if err != nil {
 		log.Fatalf("InterfaceAddrs: %v", err)
 	}
-	netIP, _, err := net.ParseCIDR(netAddrs[1].String())
-	if err != nil {
-		log.Fatalf("ParseCIDR: %v", err)
+
+	for _, addr := range netAddrs {
+		ip, _, err := net.ParseCIDR(addr.String())
+		if err != nil {
+			continue
+		}
+
+		if ip.To4() != nil {
+			netIP = ip
+			break
+		}
 	}
+
+	if netIP == nil {
+		log.Fatalf("Не найден IPv4 адрес для интерфейса %v", *iface)
+	}
+
 	return netIP
 }
 
@@ -102,13 +117,17 @@ func findDevice(netIP net.IP) string {
 	}
 
 	for _, pcapiface := range allInterfaces {
+
 		if len(pcapiface.Addresses) < 1 {
 			continue
 		}
 
-		addr := pcapiface.Addresses[0].IP
-		if addr.Equal(netIP) {
-			return pcapiface.Name
+		addrs := pcapiface.Addresses
+
+		for _, addr := range addrs {
+			if addr.IP.To4() != nil && addr.IP.Equal(netIP) {
+				return pcapiface.Name
+			}
 		}
 	}
 
