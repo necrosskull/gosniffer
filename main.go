@@ -17,12 +17,12 @@ import (
 )
 
 var (
-	iface    = flag.String("i", "", "Network interface to capture packets on")
-	filter   = flag.String("f", "", "BPF filter for capture")
-	snaplen  = flag.Int("s", 1024, "Maximum size to read for each packet")
-	promisc  = flag.Bool("p", false, "Enable promiscuous mode")
-	timeoutT = flag.Int("t", 30, "Connection Timeout in seconds")
-	saveDir  = flag.String("d", ".", "Directory to save pcap files")
+	iface    = flag.String("i", "", "Интерфейс для захвата пакетов")
+	filter   = flag.String("f", "", "BPF фильтр для захвата пакетов")
+	snaplen  = flag.Int("s", 1024, "Максимальный размер пакета для захвата")
+	promisc  = flag.Bool("p", false, "Включить режим promiscuous")
+	timeoutT = flag.Int("t", 0, "Таймаут захвата пакетов в секундах")
+	saveDir  = flag.String("d", ".", "Директория для сохранения pcap файлов")
 )
 
 var packetBuffer []gopacket.Packet
@@ -32,9 +32,29 @@ var device string = ""
 func main() {
 	flag.Parse()
 
-	var timeout time.Duration = time.Duration(*timeoutT) * time.Second
+	_, err := os.Stat(*saveDir)
+	if os.IsNotExist(err) {
+		errDir := os.MkdirAll(*saveDir, 0755)
+		if errDir != nil {
+			log.Fatal("Ошибка при создании папки: ", errDir)
+			return
+		}
+		log.Printf("Директория %s создана", *saveDir)
+	} else if err != nil {
+		log.Fatal("Ошибка при проверке папки: ", err)
+		return
+	}
+
+	var timeout time.Duration
+
+	if *timeoutT == 0 {
+		timeout = -1
+	} else {
+		timeout = time.Duration(*timeoutT) * time.Second
+	}
+
 	if *iface == "" {
-		log.Fatal("Please provide a network interface to capture packets on using the --i flag")
+		log.Fatal("Укажите имя интерфейса --i параметр")
 	}
 
 	netName, err := net.InterfaceByName(*iface)
@@ -50,7 +70,7 @@ func main() {
 		log.Fatalf("ParseCIDR: %v", err)
 	}
 
-	fmt.Printf("Interface: %v\n", netIP)
+	log.Printf("Прослушивается Интерфейс: %s, IP: %s", *iface, netIP)
 
 	allInterfaces, err := pcap.FindAllDevs()
 	if err != nil {
@@ -73,7 +93,7 @@ func main() {
 	}
 
 	if device == "" {
-		log.Fatalf("Could not find device with Name %v", *iface)
+		log.Fatalf("Не найден интерфейс %v", *iface)
 
 	}
 
@@ -102,6 +122,7 @@ func main() {
 		<-sigs
 		fileName := fmt.Sprintf("%s_%s.pcap", *iface, time.Now().Format("2006-01-02_15-04-05"))
 		filePath := filepath.Join(*saveDir, fileName)
+
 		f, err := os.Create(filePath)
 		if err != nil {
 			log.Fatal(err)
@@ -119,7 +140,7 @@ func main() {
 			}
 		}
 
-		fmt.Printf("Packets written to file: %s. Exiting...\n", filePath)
+		log.Printf("pcap файл создан по пути: %s", filePath)
 		os.Exit(0)
 	}()
 
