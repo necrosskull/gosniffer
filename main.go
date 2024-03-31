@@ -144,6 +144,11 @@ func savePcapFile(handle *pcap.Handle) {
 	fileName := fmt.Sprintf("%s_%s.pcap", *iface, time.Now().Format("2006-01-02_15-04-05"))
 	filePath := filepath.Join(*saveDir, fileName)
 
+	absFilePath, err := filepath.Abs(filePath)
+	if err != nil {
+		log.Fatalf("Failed to get absolute path: %v", err)
+	}
+
 	f, err := os.Create(filePath)
 	if err != nil {
 		log.Fatal(err)
@@ -163,7 +168,7 @@ func savePcapFile(handle *pcap.Handle) {
 		}
 	}
 
-	log.Printf("pcap файл создан по пути: %s", filePath)
+	log.Printf("pcap файл создан по пути: %s", absFilePath)
 }
 
 func capturePackets(pkgsrc *gopacket.PacketSource) {
