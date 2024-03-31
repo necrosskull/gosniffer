@@ -54,10 +54,10 @@ import sys
 import time
 
 gosniffer_path = "gosniffer.exe"
-inerface = "Ethernet"
+interface = "Ethernet"
 directory = "pcapdir"
 
-parameters = ["--i", inerface, "--d", directory]
+parameters = ["--i", interface, "--d", directory]
 process = subprocess.Popen([gosniffer_path] + parameters)
 
 
