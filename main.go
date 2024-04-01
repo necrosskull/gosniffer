@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,8 +17,19 @@ import (
 	"github.com/google/gopacket/pcapgo"
 )
 
+type stringSlice []string
+
+func (i *stringSlice) String() string {
+	return fmt.Sprint(*i)
+}
+
+func (i *stringSlice) Set(value string) error {
+	*i = append(*i, value)
+	return nil
+}
+
 var (
-	iface    = flag.String("i", "", "Интерфейс для захвата пакетов")
+	ifaces   stringSlice
 	filter   = flag.String("f", "", "BPF фильтр для захвата пакетов")
 	snaplen  = flag.Int("s", 1024, "Максимальный размер пакета для захвата")
 	promisc  = flag.Bool("p", false, "Включить режим promiscuous")
@@ -25,36 +37,38 @@ var (
 	saveDir  = flag.String("d", ".", "Директория для сохранения pcap файлов")
 )
 
-var packetBuffer []gopacket.Packet
-
 func init() {
+	flag.Var(&ifaces, "i", "Интерфейсы для захвата пакетов, можно указать несколько")
 	flag.Parse()
 }
 
 func main() {
-	if *iface == "" {
-		log.Fatal("Укажите имя интерфейса --i параметр")
+	if len(ifaces) == 0 {
+		log.Fatal("Укажите один или несколько интерфейсов с помощью --i параметра")
 	}
-
-	netIP := getNetIP()
-	device := findDevice(netIP)
 
 	validateSaveDir()
 
-	timeout := getTimeout()
-	handle := openPcapHandle(device, timeout)
+	var wg sync.WaitGroup
+	shutdownChan := make(chan struct{})
 
-	applyFilter(handle)
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		log.Println("Получен сигнал завершения.")
+		close(shutdownChan)
+	}()
 
-	log.Printf("Прослушивается Интерфейс: %s, IP: %s", *iface, netIP)
+	for _, iface := range ifaces {
+		wg.Add(1)
+		go func(currentIface string) {
+			defer wg.Done()
+			capturePacketsOnInterface(currentIface, shutdownChan)
+		}(iface)
+	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	go handleSignal(sigs, handle)
-
-	pkgsrc := gopacket.NewPacketSource(handle, handle.LinkType())
-	capturePackets(pkgsrc)
+	wg.Wait()
 }
 
 func validateSaveDir() {
@@ -72,19 +86,42 @@ func validateSaveDir() {
 	}
 }
 
-func getTimeout() time.Duration {
-	if *timeoutT == 0 {
-		return -1
+func capturePacketsOnInterface(iface string, shutdownChan <-chan struct{}) {
+	netIP := getNetIP(iface)
+	device := findDevice(netIP)
+
+	validateSaveDir()
+
+	timeout := getTimeout()
+	handle := openPcapHandle(device, timeout)
+
+	applyFilter(handle)
+
+	log.Printf("Прослушивается интерфейс: %s, IP: %s", iface, netIP)
+
+	pkgsrc := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetBuffer := make([]gopacket.Packet, 0)
+
+CaptureLoop:
+	for {
+		select {
+		case packet, ok := <-pkgsrc.Packets():
+			if !ok {
+				break CaptureLoop
+			}
+			packetBuffer = append(packetBuffer, packet)
+		case <-shutdownChan:
+			break CaptureLoop
+		}
 	}
-	return time.Duration(*timeoutT) * time.Second
+	savePcapFile(iface, &packetBuffer, handle)
+
 }
 
-func getNetIP() net.IP {
-	var netIP net.IP
-
-	netName, err := net.InterfaceByName(*iface)
+func getNetIP(iface string) net.IP {
+	netName, err := net.InterfaceByName(iface)
 	if err != nil {
-		log.Fatalf("InterfaceByName: %v: %v", err, *iface)
+		log.Fatalf("InterfaceByName: %v: %v", err, iface)
 	}
 	netAddrs, err := netName.Addrs()
 	if err != nil {
@@ -98,16 +135,12 @@ func getNetIP() net.IP {
 		}
 
 		if ip.To4() != nil {
-			netIP = ip
-			break
+			return ip
 		}
 	}
 
-	if netIP == nil {
-		log.Fatalf("Не найден IPv4 адрес для интерфейса %v", *iface)
-	}
-
-	return netIP
+	log.Fatalf("Не найден IPv4 адрес для интерфейса %v", iface)
+	return nil
 }
 
 func findDevice(netIP net.IP) string {
@@ -131,7 +164,7 @@ func findDevice(netIP net.IP) string {
 		}
 	}
 
-	log.Fatalf("Не найден интерфейс %v", *iface)
+	log.Fatalf("Не найден интерфейс %v", ifaces)
 	return ""
 }
 
@@ -153,14 +186,8 @@ func applyFilter(handle *pcap.Handle) {
 	}
 }
 
-func handleSignal(sigs chan os.Signal, handle *pcap.Handle) {
-	<-sigs
-	savePcapFile(handle)
-	os.Exit(0)
-}
-
-func savePcapFile(handle *pcap.Handle) {
-	fileName := fmt.Sprintf("%s_%s.pcap", *iface, time.Now().Format("2006-01-02_15-04-05"))
+func savePcapFile(iface string, packetBuffer *[]gopacket.Packet, handle *pcap.Handle) {
+	fileName := fmt.Sprintf("%s_%s.pcap", iface, time.Now().Format("2006-01-02_15-04-05"))
 	filePath := filepath.Join(*saveDir, fileName)
 
 	absFilePath, err := filepath.Abs(filePath)
@@ -174,24 +201,26 @@ func savePcapFile(handle *pcap.Handle) {
 	}
 
 	defer f.Close()
-	defer handle.Close()
 
 	pcapw := pcapgo.NewWriter(f)
 	if err := pcapw.WriteFileHeader(uint32(*snaplen), handle.LinkType()); err != nil {
 		log.Fatalf("WriteFileHeader: %v", err)
 	}
 
-	for _, packet := range packetBuffer {
+	for _, packet := range *packetBuffer {
 		if err := pcapw.WritePacket(packet.Metadata().CaptureInfo, packet.Data()); err != nil {
 			log.Fatalf("pcap.WritePacket(): %v", err)
 		}
 	}
 
+	handle.Close()
+
 	log.Printf("pcap файл создан по пути: %s", absFilePath)
 }
 
-func capturePackets(pkgsrc *gopacket.PacketSource) {
-	for packet := range pkgsrc.Packets() {
-		packetBuffer = append(packetBuffer, packet)
+func getTimeout() time.Duration {
+	if *timeoutT == 0 {
+		return -1
 	}
+	return time.Duration(*timeoutT) * time.Second
 }
